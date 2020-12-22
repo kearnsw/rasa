@@ -271,49 +271,51 @@ class FormAction(LoopAction):
         )
 
         slot_values = {}
-        for slot in self.required_slots(domain):
-            # look for other slots
-            if slot != slot_to_fill:
-                # list is used to cover the case of list slot type
-                slot_mappings = self.get_mappings_for_slot(slot, domain)
+        for slot_name in self.required_slots(domain):
+            slot_definition = [slot for slot in domain.slots if slot.name == slot_name]
+            if slot_definition and slot_definition[0].auto_fill:
+                # look for other slots
+                if slot_name != slot_to_fill:
+                    # list is used to cover the case of list slot type
+                    slot_mappings = self.get_mappings_for_slot(slot_name, domain)
 
-                for slot_mapping in slot_mappings:
-                    # check whether the slot should be filled by an entity in the input
-                    should_fill_entity_slot = (
-                        slot_mapping["type"] == str(SlotMapping.FROM_ENTITY)
-                        and self.intent_is_desired(slot_mapping, tracker)
-                        and self.entity_is_desired(
-                            slot_mapping,
-                            slot,
-                            entity_type_of_slot_to_fill,
-                            tracker,
-                            domain,
+                    for slot_mapping in slot_mappings:
+                        # check whether the slot should be filled by an entity in the input
+                        should_fill_entity_slot = (
+                            slot_mapping["type"] == str(SlotMapping.FROM_ENTITY)
+                            and self.intent_is_desired(slot_mapping, tracker)
+                            and self.entity_is_desired(
+                                slot_mapping,
+                                slot_name,
+                                entity_type_of_slot_to_fill,
+                                tracker,
+                                domain,
+                            )
                         )
-                    )
-                    # check whether the slot should be
-                    # filled from trigger intent mapping
-                    should_fill_trigger_slot = (
-                        tracker.active_loop_name != self.name()
-                        and slot_mapping["type"] == str(SlotMapping.FROM_TRIGGER_INTENT)
-                        and self.intent_is_desired(slot_mapping, tracker)
-                    )
-                    if should_fill_entity_slot:
-                        value = self.get_entity_value(
-                            slot_mapping["entity"],
-                            tracker,
-                            slot_mapping.get("role"),
-                            slot_mapping.get("group"),
+                        # check whether the slot should be
+                        # filled from trigger intent mapping
+                        should_fill_trigger_slot = (
+                            tracker.active_loop_name != self.name()
+                            and slot_mapping["type"] == str(SlotMapping.FROM_TRIGGER_INTENT)
+                            and self.intent_is_desired(slot_mapping, tracker)
                         )
-                    elif should_fill_trigger_slot:
-                        value = slot_mapping.get("value")
-                    else:
-                        value = None
+                        if should_fill_entity_slot:
+                            value = self.get_entity_value(
+                                slot_mapping["entity"],
+                                tracker,
+                                slot_mapping.get("role"),
+                                slot_mapping.get("group"),
+                            )
+                        elif should_fill_trigger_slot:
+                            value = slot_mapping.get("value")
+                        else:
+                            value = None
 
-                    if value is not None:
-                        logger.debug(f"Extracted '{value}' for extra slot '{slot}'.")
-                        slot_values[slot] = value
-                        # this slot is done, check  next
-                        break
+                        if value is not None:
+                            logger.debug(f"Extracted '{value}' for extra slot '{slot_name}'.")
+                            slot_values[slot_name] = value
+                            # this slot is done, check  next
+                            break
 
         return slot_values
 
@@ -395,7 +397,7 @@ class FormAction(LoopAction):
 
         validate_name = f"validate_{self.name()}"
 
-        if validate_name not in domain.action_names:
+        if validate_name not in domain.action_names_or_texts:
             return events
 
         _tracker = self._temporary_tracker(tracker, events, domain)
@@ -525,20 +527,21 @@ class FormAction(LoopAction):
             None,
         )
 
-    def _name_of_utterance(self, domain: Domain, slot_name: Text) -> Text:
+    def _name_of_utterance(self, domain: Domain, slot_name: Text) -> Optional[Text]:
         search_path = [
             f"action_ask_{self._form_name}_{slot_name}",
             f"{UTTER_PREFIX}ask_{self._form_name}_{slot_name}",
             f"action_ask_{slot_name}",
+            f"{UTTER_PREFIX}ask_{slot_name}",
         ]
 
         found_actions = (
             action_name
             for action_name in search_path
-            if action_name in domain.action_names
+            if action_name in domain.action_names_or_texts
         )
 
-        return next(found_actions, f"{UTTER_PREFIX}ask_{slot_name}")
+        return next(found_actions, None)
 
     async def _ask_for_slot(
         self,
@@ -550,13 +553,21 @@ class FormAction(LoopAction):
     ) -> List[Event]:
         logger.debug(f"Request next slot '{slot_name}'")
 
-        action_to_ask_for_next_slot = action.action_from_name(
-            self._name_of_utterance(domain, slot_name), domain, self.action_endpoint
+        action_to_ask_for_next_slot = self._name_of_utterance(domain, slot_name)
+        if not action_to_ask_for_next_slot:
+            # Use a debug log as the user might have asked as part of a custom action
+            logger.debug(
+                f"There was no action found to ask for slot '{slot_name}' "
+                f"name to be filled."
+            )
+            return []
+
+        action_to_ask_for_next_slot = action.action_for_name_or_text(
+            action_to_ask_for_next_slot, domain, self.action_endpoint
         )
-        events_to_ask_for_next_slot = await action_to_ask_for_next_slot.run(
+        return await action_to_ask_for_next_slot.run(
             output_channel, nlg, tracker, domain
         )
-        return events_to_ask_for_next_slot
 
     # helpers
     @staticmethod
